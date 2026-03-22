@@ -191,17 +191,8 @@ class RAGPipeline:
         doc_results = self.vector_store.query(user_id, question, TOP_K)
         doc_context = self._build_context(doc_results, MAX_CONTEXT_LENGTH // 2) if doc_results else ""
 
-        # Улучшаем веб-запрос: если есть документы, извлекаем ключевые слова
-        web_query = question
-        if doc_results:
-            # Добавляем ключевые слова из топ-чанка к запросу
-            top_text = doc_results[0]["text"][:200]
-            # Берём первые значимые слова из документа для контекста поиска
-            doc_words = [w for w in top_text.split() if len(w) > 4][:5]
-            if doc_words:
-                web_query = f"{question} {' '.join(doc_words)}"
-
-        web_results = await self.web_search.search(web_query)
+        # Веб-поиск — используем только пользовательский вопрос (без мусора из документов)
+        web_results = await self.web_search.search(question)
         web_context = WebSearchClient.format_results(web_results)
         if len(web_context) > MAX_CONTEXT_LENGTH // 2:
             web_context = web_context[: MAX_CONTEXT_LENGTH // 2]
