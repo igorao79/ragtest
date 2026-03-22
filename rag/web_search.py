@@ -6,54 +6,37 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-# Стоп-слова для очистки поисковых запросов (русские и английские)
-_STOP_WORDS = {
-    # Русские
-    "что", "кто", "как", "где", "когда", "почему", "зачем", "какой", "какая",
-    "какое", "какие", "чем", "чего", "кого", "кому", "чему", "ещё", "еще",
+# Слова-команды боту — не несут поисковой ценности
+_BOT_COMMANDS = {
     "расскажи", "скажи", "найди", "покажи", "подскажи", "объясни",
-    "можешь", "можно", "пожалуйста", "интересного", "интересное",
-    "мне", "про", "для", "это", "этот", "эта", "эти", "этого",
-    "тоже", "также", "ещё", "вот", "так", "вообще", "очень",
-    "бы", "же", "ли", "ну", "да", "нет", "не", "ни",
-    "а", "и", "о", "в", "на", "из", "за", "от", "до", "по", "с", "к", "у",
-    "об", "со", "во", "ко",
+    "можешь", "пожалуйста", "интересного", "интересное",
+    "мне", "ещё", "еще", "вообще",
     "интернете", "документе", "документах", "файле", "файлах",
-    # Английские
-    "what", "who", "how", "where", "when", "why", "which",
-    "tell", "me", "about", "find", "show", "explain", "can", "you",
-    "the", "a", "an", "is", "are", "was", "were", "be", "been",
-    "in", "on", "at", "to", "for", "of", "with", "from",
-    "more", "also", "please", "interesting",
+    # English
+    "tell", "find", "show", "explain", "please", "interesting",
+    "more", "also",
 }
 
 
 def clean_search_query(query: str) -> str:
-    """Очистить пользовательский запрос от стоп-слов для поиска.
+    """Мягкая очистка запроса: убирает только команды боту.
 
-    Оставляет ключевые слова — имена собственные, термины, числа.
+    Сохраняет вопросительные слова (кто, что, где) — они важны для поиска.
     """
     # Убираем знаки пунктуации кроме дефисов
     cleaned = re.sub(r"[^\w\s-]", " ", query)
     words = cleaned.split()
 
-    # Фильтруем стоп-слова, но сохраняем слова с заглавной буквы (имена)
-    important = []
-    for word in words:
-        lower = word.lower()
-        if lower not in _STOP_WORDS:
-            important.append(word)
-        elif word[0].isupper() and len(word) > 2:
-            # Имена собственные сохраняем даже если они в стоп-словах
-            important.append(word)
+    # Убираем только команды боту
+    result_words = [w for w in words if w.lower() not in _BOT_COMMANDS]
 
-    result = " ".join(important)
+    result = " ".join(result_words).strip()
 
-    # Если всё отфильтровалось — возвращаем исходный запрос без пунктуации
-    if len(result.strip()) < 3:
+    # Если всё отфильтровалось — возвращаем исходный
+    if len(result) < 3:
         return " ".join(words)
 
-    return result.strip()
+    return result
 
 
 @dataclass
@@ -86,14 +69,24 @@ class WebSearchClient:
 
         limit = max_results or self.max_results
 
-        # Очищаем запрос от стоп-слов
-        cleaned_query = clean_search_query(query)
-        logger.info("Поиск: '%s' → '%s'", query, cleaned_query)
+        # Мягкая очистка: убираем только команды боту, сохраняем вопрос
+        cleaned = clean_search_query(query)
+        logger.info("Веб-поиск: '%s' -> '%s'", query, cleaned)
 
         loop = asyncio.get_event_loop()
+
+        # Сначала пробуем очищенный запрос
         results = await loop.run_in_executor(
-            None, partial(self._search_sync, cleaned_query, limit)
+            None, partial(self._search_sync, cleaned, limit)
         )
+
+        # Если 0 результатов — пробуем оригинальный
+        if not results and cleaned != query:
+            logger.info("Повторный поиск с оригинальным запросом: '%s'", query)
+            results = await loop.run_in_executor(
+                None, partial(self._search_sync, query, limit)
+            )
+
         return results
 
     def _search_sync(self, query: str, max_results: int) -> list[SearchResult]:

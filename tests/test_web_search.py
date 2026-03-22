@@ -33,17 +33,19 @@ def test_format_results_short_empty():
     assert "Ничего не найдено" in text
 
 
-def test_clean_query_removes_stop_words():
-    result = clean_search_query("что еще интересного можешь сказать о Николае втором")
-    assert "что" not in result.lower().split()
+def test_clean_query_removes_bot_commands():
+    result = clean_search_query("расскажи что еще интересного о Николае втором")
+    assert "расскажи" not in result.lower().split()
     assert "интересного" not in result.lower().split()
     assert "николае" in result.lower()
 
 
-def test_clean_query_preserves_names():
-    result = clean_search_query("расскажи про Николая второго")
-    assert "Николая" in result
-    assert "второго" in result
+def test_clean_query_preserves_question_words():
+    """Вопросительные слова важны для поиска — не удалять."""
+    result = clean_search_query("кто правил после николая второго")
+    assert "кто" in result.lower()
+    assert "правил" in result.lower()
+    assert "николая" in result.lower()
 
 
 def test_clean_query_preserves_terms():
@@ -52,19 +54,19 @@ def test_clean_query_preserves_terms():
     assert "обучении" in result
 
 
-def test_clean_query_all_stop_words():
-    # Если всё стоп-слова — возвращаем всё
-    result = clean_search_query("что это как")
+def test_clean_query_all_commands():
+    # Если всё — команды боту, возвращаем как есть
+    result = clean_search_query("расскажи мне пожалуйста")
     assert len(result) > 0
 
 
-def test_clean_query_web_search_junk():
+def test_clean_query_web_junk():
     result = clean_search_query("в интернете найди")
-    # Должно вернуть хоть что-то
     assert len(result) > 0
 
 
 def test_clean_query_keeps_numbers():
     result = clean_search_query("кто правил после 1917 года")
     assert "1917" in result
+    assert "кто" in result
     assert "правил" in result
