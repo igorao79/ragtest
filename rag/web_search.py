@@ -6,35 +6,12 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-# Слова-команды боту — не несут поисковой ценности
-_BOT_COMMANDS = {
-    "расскажи", "скажи", "найди", "покажи", "подскажи", "объясни",
-    "можешь", "пожалуйста", "интересного", "интересное",
-    "мне", "ещё", "еще", "вообще",
-    "интернете", "документе", "документах", "файле", "файлах",
-    # English
-    "tell", "find", "show", "explain", "please", "interesting",
-    "more", "also",
-}
-
-# Кириллица — для определения языка запроса
 _CYRILLIC_RE = re.compile(r"[а-яА-ЯёЁ]")
 
 
 def _detect_russian(text: str) -> bool:
     """Определить, содержит ли текст кириллицу."""
     return bool(_CYRILLIC_RE.search(text))
-
-
-def clean_search_query(query: str) -> str:
-    """Мягкая очистка запроса: убирает только команды боту."""
-    cleaned = re.sub(r"[^\w\s-]", " ", query)
-    words = cleaned.split()
-    result_words = [w for w in words if w.lower() not in _BOT_COMMANDS]
-    result = " ".join(result_words).strip()
-    if len(result) < 3:
-        return " ".join(words)
-    return result
 
 
 @dataclass
@@ -58,30 +35,20 @@ class WebSearchClient:
         from functools import partial
 
         limit = max_results or self.max_results
-        cleaned = clean_search_query(query)
-        logger.info("Веб-поиск: '%s' -> '%s'", query, cleaned)
+        region = "ru-ru" if _detect_russian(query) else "wt-wt"
+
+        logger.info("Веб-поиск: '%s', region=%s", query, region)
 
         loop = asyncio.get_event_loop()
-
-        # Определяем регион по языку запроса
-        region = "ru-ru" if _detect_russian(cleaned) else "wt-wt"
-
         results = await loop.run_in_executor(
-            None, partial(self._search_sync, cleaned, limit, region)
+            None, partial(self._search_sync, query, limit, region)
         )
 
-        # Fallback: если 0 результатов и запрос был очищен — пробуем оригинал
-        if not results and cleaned != query:
-            logger.info("Повторный поиск: '%s'", query)
-            results = await loop.run_in_executor(
-                None, partial(self._search_sync, query, limit, region)
-            )
-
-        # Fallback 2: если region не помог — пробуем wt-wt
+        # Fallback: пробуем без региона
         if not results and region != "wt-wt":
-            logger.info("Повторный поиск без региона: '%s'", cleaned)
+            logger.info("Fallback без региона: '%s'", query)
             results = await loop.run_in_executor(
-                None, partial(self._search_sync, cleaned, limit, "wt-wt")
+                None, partial(self._search_sync, query, limit, "wt-wt")
             )
 
         return results

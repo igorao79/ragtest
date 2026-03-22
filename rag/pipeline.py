@@ -166,9 +166,38 @@ class RAGPipeline:
         )
         return answer.strip()
 
+    async def _make_search_query(self, question: str) -> str:
+        """Попросить LLM сформулировать поисковый запрос из вопроса пользователя."""
+        try:
+            result = await self.llm_client.generate(
+                prompt=question,
+                system=(
+                    "Переформулируй вопрос пользователя в короткий поисковый запрос "
+                    "для поисковой системы (3-6 слов). Убери разговорные слова. "
+                    "Оставь только ключевые слова и имена. "
+                    "Ответь ТОЛЬКО поисковым запросом, без пояснений.\n"
+                    "Примеры:\n"
+                    "Вопрос: а кто правил после николая второго?\n"
+                    "Запрос: правитель России после Николая II\n"
+                    "Вопрос: что еще интересного можешь сказать о Николае втором?\n"
+                    "Запрос: Николай II интересные факты\n"
+                    "Вопрос: какая столица Франции?\n"
+                    "Запрос: столица Франции"
+                ),
+            )
+            query = result.strip().strip('"').strip("'").split("\n")[0].strip()
+            if len(query) < 3:
+                return question
+            logger.info("LLM поисковый запрос: '%s' -> '%s'", question, query)
+            return query
+        except Exception as e:
+            logger.warning("Не удалось сгенерировать поисковый запрос: %s", e)
+            return question
+
     async def web_answer(self, question: str) -> str:
         """Поиск в интернете и генерация ответа."""
-        results = await self.web_search.search(question)
+        search_query = await self._make_search_query(question)
+        results = await self.web_search.search(search_query)
         if not results:
             return "Не удалось найти результаты в интернете. Попробуйте другой запрос."
 
@@ -191,8 +220,9 @@ class RAGPipeline:
         doc_results = self.vector_store.query(user_id, question, TOP_K)
         doc_context = self._build_context(doc_results, MAX_CONTEXT_LENGTH // 2) if doc_results else ""
 
-        # Веб-поиск — используем только пользовательский вопрос (без мусора из документов)
-        web_results = await self.web_search.search(question)
+        # LLM формулирует поисковый запрос из вопроса пользователя
+        search_query = await self._make_search_query(question)
+        web_results = await self.web_search.search(search_query)
         web_context = WebSearchClient.format_results(web_results)
         if len(web_context) > MAX_CONTEXT_LENGTH // 2:
             web_context = web_context[: MAX_CONTEXT_LENGTH // 2]

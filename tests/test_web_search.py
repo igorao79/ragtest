@@ -1,6 +1,6 @@
 """Тесты для WebSearchClient."""
 
-from rag.web_search import SearchResult, WebSearchClient, clean_search_query
+from rag.web_search import SearchResult, WebSearchClient
 
 
 def test_format_results():
@@ -33,40 +33,14 @@ def test_format_results_short_empty():
     assert "Ничего не найдено" in text
 
 
-def test_clean_query_removes_bot_commands():
-    result = clean_search_query("расскажи что еще интересного о Николае втором")
-    assert "расскажи" not in result.lower().split()
-    assert "интересного" not in result.lower().split()
-    assert "николае" in result.lower()
-
-
-def test_clean_query_preserves_question_words():
-    """Вопросительные слова важны для поиска — не удалять."""
-    result = clean_search_query("кто правил после николая второго")
-    assert "кто" in result.lower()
-    assert "правил" in result.lower()
-    assert "николая" in result.lower()
-
-
-def test_clean_query_preserves_terms():
-    result = clean_search_query("найди информацию о машинном обучении")
-    assert "машинном" in result
-    assert "обучении" in result
-
-
-def test_clean_query_all_commands():
-    # Если всё — команды боту, возвращаем как есть
-    result = clean_search_query("расскажи мне пожалуйста")
-    assert len(result) > 0
-
-
-def test_clean_query_web_junk():
-    result = clean_search_query("в интернете найди")
-    assert len(result) > 0
-
-
-def test_clean_query_keeps_numbers():
-    result = clean_search_query("кто правил после 1917 года")
-    assert "1917" in result
-    assert "кто" in result
-    assert "правил" in result
+def test_filter_nsfw():
+    results = [
+        SearchResult(title="Normal site", url="https://example.com", snippet="ok"),
+        SearchResult(title="Xxx Porn", url="https://pornhub.com/x", snippet="bad"),
+        SearchResult(title="Good article", url="https://xvideos.com/a", snippet="bad"),
+        SearchResult(title="Another normal", url="https://wiki.org", snippet="ok"),
+    ]
+    filtered = WebSearchClient._filter_nsfw(results)
+    assert len(filtered) == 2
+    assert filtered[0].title == "Normal site"
+    assert filtered[1].title == "Another normal"
