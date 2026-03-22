@@ -17,25 +17,23 @@ _BOT_COMMANDS = {
     "more", "also",
 }
 
+# Кириллица — для определения языка запроса
+_CYRILLIC_RE = re.compile(r"[а-яА-ЯёЁ]")
+
+
+def _detect_russian(text: str) -> bool:
+    """Определить, содержит ли текст кириллицу."""
+    return bool(_CYRILLIC_RE.search(text))
+
 
 def clean_search_query(query: str) -> str:
-    """Мягкая очистка запроса: убирает только команды боту.
-
-    Сохраняет вопросительные слова (кто, что, где) — они важны для поиска.
-    """
-    # Убираем знаки пунктуации кроме дефисов
+    """Мягкая очистка запроса: убирает только команды боту."""
     cleaned = re.sub(r"[^\w\s-]", " ", query)
     words = cleaned.split()
-
-    # Убираем только команды боту
     result_words = [w for w in words if w.lower() not in _BOT_COMMANDS]
-
     result = " ".join(result_words).strip()
-
-    # Если всё отфильтровалось — возвращаем исходный
     if len(result) < 3:
         return " ".join(words)
-
     return result
 
 
@@ -55,50 +53,53 @@ class WebSearchClient:
         self.max_results = max_results
 
     async def search(self, query: str, max_results: int | None = None) -> list[SearchResult]:
-        """Выполнить поиск в интернете.
-
-        Args:
-            query: Поисковый запрос.
-            max_results: Количество результатов (по умолчанию self.max_results).
-
-        Returns:
-            Список результатов поиска.
-        """
+        """Выполнить поиск в интернете."""
         import asyncio
         from functools import partial
 
         limit = max_results or self.max_results
-
-        # Мягкая очистка: убираем только команды боту, сохраняем вопрос
         cleaned = clean_search_query(query)
         logger.info("Веб-поиск: '%s' -> '%s'", query, cleaned)
 
         loop = asyncio.get_event_loop()
 
-        # Сначала пробуем очищенный запрос
+        # Определяем регион по языку запроса
+        region = "ru-ru" if _detect_russian(cleaned) else "wt-wt"
+
         results = await loop.run_in_executor(
-            None, partial(self._search_sync, cleaned, limit)
+            None, partial(self._search_sync, cleaned, limit, region)
         )
 
-        # Если 0 результатов — пробуем оригинальный
+        # Fallback: если 0 результатов и запрос был очищен — пробуем оригинал
         if not results and cleaned != query:
-            logger.info("Повторный поиск с оригинальным запросом: '%s'", query)
+            logger.info("Повторный поиск: '%s'", query)
             results = await loop.run_in_executor(
-                None, partial(self._search_sync, query, limit)
+                None, partial(self._search_sync, query, limit, region)
+            )
+
+        # Fallback 2: если region не помог — пробуем wt-wt
+        if not results and region != "wt-wt":
+            logger.info("Повторный поиск без региона: '%s'", cleaned)
+            results = await loop.run_in_executor(
+                None, partial(self._search_sync, cleaned, limit, "wt-wt")
             )
 
         return results
 
-    def _search_sync(self, query: str, max_results: int) -> list[SearchResult]:
+    def _search_sync(
+        self, query: str, max_results: int, region: str = "wt-wt"
+    ) -> list[SearchResult]:
         """Синхронный поиск (выполняется в thread executor)."""
         try:
             from duckduckgo_search import DDGS
 
             with DDGS() as ddgs:
                 raw = list(ddgs.text(
-                    query,
+                    keywords=query,
+                    region=region,
+                    safesearch="moderate",
                     max_results=max_results,
-                    safesearch="on",
+                    backend="html",
                 ))
 
             results = [
@@ -110,10 +111,12 @@ class WebSearchClient:
                 for r in raw
             ]
 
-            # Фильтруем NSFW-результаты
             results = self._filter_nsfw(results)
 
-            logger.info("Веб-поиск '%s': найдено %d результатов", query, len(results))
+            logger.info(
+                "Веб-поиск '%s' (region=%s): %d результатов",
+                query, region, len(results),
+            )
             return results
 
         except Exception as e:
