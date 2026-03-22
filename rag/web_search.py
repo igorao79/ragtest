@@ -44,7 +44,7 @@ class WebSearchClient:
             None, partial(self._search_sync, query, limit, region)
         )
 
-        # Fallback: пробуем без региона
+        # Fallback без региона
         if not results and region != "wt-wt":
             logger.info("Fallback без региона: '%s'", query)
             results = await loop.run_in_executor(
@@ -56,18 +56,16 @@ class WebSearchClient:
     def _search_sync(
         self, query: str, max_results: int, region: str = "wt-wt"
     ) -> list[SearchResult]:
-        """Синхронный поиск (выполняется в thread executor)."""
+        """Синхронный поиск через ddgs."""
         try:
-            from duckduckgo_search import DDGS
+            from ddgs import DDGS
 
-            with DDGS() as ddgs:
-                raw = list(ddgs.text(
-                    keywords=query,
-                    region=region,
-                    safesearch="moderate",
-                    max_results=max_results,
-                    backend="html",
-                ))
+            raw = DDGS().text(
+                keywords=query,
+                region=region,
+                safesearch="moderate",
+                max_results=max_results,
+            )
 
             results = [
                 SearchResult(
