@@ -1,0 +1,21 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # После запуска выполнить: docker exec ollama ollama pull llama3.2:3b
+
+  bot:
+    build: .
+    env_file: .env
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+    volumes:
+      - ./data:/app/data
+
+volumes:
+  ollama_data:
