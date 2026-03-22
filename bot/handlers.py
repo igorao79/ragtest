@@ -26,7 +26,9 @@ _START_TEXT = (
     "Команды:\n"
     "/help — подробная инструкция\n"
     "/stats — статистика загруженных документов\n"
-    "/clear — очистить все мои документы\n\n"
+    "/clear — очистить все мои документы\n"
+    "/search — поиск в интернете\n"
+    "/websearch — поиск в интернете + документы\n\n"
     "Просто отправь файл, а затем задай вопрос!"
 )
 
@@ -40,7 +42,9 @@ _HELP_TEXT = (
     "/start — приветствие\n"
     "/help — эта инструкция\n"
     "/stats — количество чанков в вашей базе\n"
-    "/clear — удалить все ваши документы\n\n"
+    "/clear — удалить все ваши документы\n"
+    "/search <запрос> — поиск в интернете\n"
+    "/websearch <запрос> — ответ из документов + интернет\n\n"
     f"Лимиты:\n"
     f"• Максимальный размер файла: {MAX_FILE_SIZE_MB} МБ\n"
     f"• Форматы: {', '.join(ALLOWED_EXTENSIONS)}\n\n"
@@ -106,6 +110,54 @@ async def clear_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception as e:
         logger.error("Ошибка при очистке коллекции: %s", e)
         await update.message.reply_text("Не удалось очистить базу знаний.")
+
+
+async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик /search — поиск в интернете."""
+    pipeline: RAGPipeline = context.bot_data["pipeline"]
+    query = " ".join(context.args) if context.args else ""
+    if not query.strip():
+        await update.message.reply_text(
+            "Укажите запрос после команды.\nПример: /search что такое RAG"
+        )
+        return
+
+    await update.message.chat.send_action(ChatAction.TYPING)
+    try:
+        answer = await pipeline.web_answer(query.strip())
+        for part in _split_message(answer):
+            await update.message.reply_text(part, disable_web_page_preview=True)
+    except (OllamaConnectionError, OllamaTimeoutError) as e:
+        logger.error("Ошибка Ollama при веб-поиске: %s", e)
+        await update.message.reply_text(_OLLAMA_ERROR)
+    except Exception as e:
+        logger.error("Ошибка при веб-поиске: %s", e, exc_info=True)
+        await update.message.reply_text("Произошла ошибка при поиске. Попробуйте позже.")
+
+
+async def websearch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик /websearch — документы + интернет."""
+    pipeline: RAGPipeline = context.bot_data["pipeline"]
+    user_id = update.effective_user.id
+    query = " ".join(context.args) if context.args else ""
+    if not query.strip():
+        await update.message.reply_text(
+            "Укажите запрос после команды.\n"
+            "Пример: /websearch подробнее про тему из моего документа"
+        )
+        return
+
+    await update.message.chat.send_action(ChatAction.TYPING)
+    try:
+        answer = await pipeline.combined_answer(user_id, query.strip())
+        for part in _split_message(answer):
+            await update.message.reply_text(part, disable_web_page_preview=True)
+    except (OllamaConnectionError, OllamaTimeoutError) as e:
+        logger.error("Ошибка Ollama при комбинированном поиске: %s", e)
+        await update.message.reply_text(_OLLAMA_ERROR)
+    except Exception as e:
+        logger.error("Ошибка при комбинированном поиске: %s", e, exc_info=True)
+        await update.message.reply_text("Произошла ошибка при поиске. Попробуйте позже.")
 
 
 async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

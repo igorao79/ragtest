@@ -40,8 +40,10 @@ def main() -> None:
         document_handler,
         help_handler,
         message_handler,
+        search_handler,
         start_handler,
         stats_handler,
+        websearch_handler,
     )
     from rag.llm_client import OllamaClient
     from rag.pipeline import RAGPipeline
@@ -65,6 +67,8 @@ def main() -> None:
     app.add_handler(CommandHandler("help", help_handler))
     app.add_handler(CommandHandler("stats", stats_handler))
     app.add_handler(CommandHandler("clear", clear_handler))
+    app.add_handler(CommandHandler("search", search_handler))
+    app.add_handler(CommandHandler("websearch", websearch_handler))
     app.add_handler(MessageHandler(filters.Document.ALL, document_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
