@@ -102,7 +102,11 @@ class WebSearchClient:
             from duckduckgo_search import DDGS
 
             with DDGS() as ddgs:
-                raw = list(ddgs.text(query, max_results=max_results))
+                raw = list(ddgs.text(
+                    query,
+                    max_results=max_results,
+                    safesearch="on",
+                ))
 
             results = [
                 SearchResult(
@@ -112,12 +116,35 @@ class WebSearchClient:
                 )
                 for r in raw
             ]
+
+            # Фильтруем NSFW-результаты
+            results = self._filter_nsfw(results)
+
             logger.info("Веб-поиск '%s': найдено %d результатов", query, len(results))
             return results
 
         except Exception as e:
             logger.error("Ошибка веб-поиска: %s", e)
             return []
+
+    @staticmethod
+    def _filter_nsfw(results: list[SearchResult]) -> list[SearchResult]:
+        """Отфильтровать NSFW-результаты."""
+        blocked_domains = {
+            "pornhub", "xvideos", "xnxx", "xhamster", "redtube",
+            "youporn", "tube8", "spankbang", "brazzers", "onlyfans",
+            "chaturbate", "stripchat", "livejasmin", "cam4",
+        }
+        filtered = []
+        for r in results:
+            url_lower = r.url.lower()
+            if any(domain in url_lower for domain in blocked_domains):
+                continue
+            title_lower = r.title.lower()
+            if any(word in title_lower for word in ("porn", "xxx", "sex", "nude", "nsfw")):
+                continue
+            filtered.append(r)
+        return filtered
 
     @staticmethod
     def format_results(results: list[SearchResult]) -> str:
