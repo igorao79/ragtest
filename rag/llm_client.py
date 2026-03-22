@@ -1,6 +1,8 @@
-"""HTTP-клиент для Ollama API (/api/generate)."""
+"""HTTP-клиент для Ollama API (/api/generate, /api/chat)."""
 
+import base64
 import logging
+from collections.abc import AsyncIterator
 
 import httpx
 
@@ -24,19 +26,7 @@ class OllamaClient:
         self._client = httpx.AsyncClient(timeout=120.0)
 
     async def generate(self, prompt: str, system: str = "") -> str:
-        """Сгенерировать ответ через Ollama.
-
-        Args:
-            prompt: Текст промпта.
-            system: Системный промпт.
-
-        Returns:
-            Сгенерированный текст.
-
-        Raises:
-            OllamaConnectionError: Если не удалось подключиться.
-            OllamaTimeoutError: Если превышен таймаут.
-        """
+        """Сгенерировать ответ через Ollama."""
         url = f"{self.base_url}/api/generate"
         body = {
             "model": self.model,
@@ -65,22 +55,92 @@ class OllamaClient:
                 f"Ошибка HTTP от Ollama: {e.response.status_code}"
             ) from e
 
-    async def is_available(self) -> bool:
-        """Проверить доступность Ollama и наличие модели.
+    async def generate_stream(self, prompt: str, system: str = "") -> AsyncIterator[str]:
+        """Стриминг ответа по частям."""
+        url = f"{self.base_url}/api/generate"
+        body = {
+            "model": self.model,
+            "prompt": prompt,
+            "system": system,
+            "stream": True,
+            "options": {
+                "num_predict": 1024,
+            },
+        }
+        try:
+            async with self._client.stream("POST", url, json=body) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+                    import json
+                    data = json.loads(line)
+                    token = data.get("response", "")
+                    if token:
+                        yield token
+                    if data.get("done", False):
+                        break
+        except httpx.ConnectError as e:
+            raise OllamaConnectionError(
+                f"Не удалось подключиться к Ollama ({self.base_url}): {e}"
+            ) from e
+        except httpx.TimeoutException as e:
+            raise OllamaTimeoutError(
+                f"Таймаут при генерации ответа: {e}"
+            ) from e
+
+    async def generate_vision(
+        self, prompt: str, image_data: bytes, model: str | None = None
+    ) -> str:
+        """Анализ изображения через vision-модель.
+
+        Args:
+            prompt: Текст запроса.
+            image_data: Байты изображения.
+            model: Модель для vision (по умолчанию self.model).
 
         Returns:
-            True если Ollama доступна и модель загружена.
+            Ответ модели.
         """
+        url = f"{self.base_url}/api/generate"
+        b64_image = base64.b64encode(image_data).decode("utf-8")
+        body = {
+            "model": model or self.model,
+            "prompt": prompt,
+            "images": [b64_image],
+            "stream": False,
+            "options": {
+                "num_predict": 1024,
+            },
+        }
+        try:
+            response = await self._client.post(url, json=body)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("response", "")
+        except httpx.ConnectError as e:
+            raise OllamaConnectionError(
+                f"Не удалось подключиться к Ollama ({self.base_url}): {e}"
+            ) from e
+        except httpx.TimeoutException as e:
+            raise OllamaTimeoutError(
+                f"Таймаут при анализе изображения: {e}"
+            ) from e
+        except httpx.HTTPStatusError as e:
+            raise OllamaConnectionError(
+                f"Ошибка HTTP от Ollama: {e.response.status_code}"
+            ) from e
+
+    async def is_available(self) -> bool:
+        """Проверить доступность Ollama и наличие модели."""
         try:
             response = await self._client.get(f"{self.base_url}/api/tags")
             response.raise_for_status()
             data = response.json()
             models = [m.get("name", "") for m in data.get("models", [])]
-            # Проверяем точное совпадение или совпадение без тега
             for name in models:
                 if name == self.model or name.startswith(f"{self.model}:"):
                     return True
-                # llama3.2:3b может быть в списке как llama3.2:3b-instruct-...
                 if self.model in name:
                     return True
             logger.warning(
