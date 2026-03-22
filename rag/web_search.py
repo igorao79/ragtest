@@ -61,7 +61,7 @@ class WebSearchClient:
             from ddgs import DDGS
 
             raw = DDGS().text(
-                keywords=query,
+                query,
                 region=region,
                 safesearch="moderate",
                 max_results=max_results,
