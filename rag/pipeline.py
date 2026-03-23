@@ -254,15 +254,22 @@ class RAGPipeline:
         return await self.whisper.transcribe(audio_path)
 
     async def agent_answer(
-        self, user_id: int, question: str, collection: str | None = None
+        self, user_id: int, question: str, collection: str | None = None,
+        on_tool_call=None,
     ) -> str:
-        """Ответ через агентский роутер — LLM сама выбирает инструмент."""
+        """Ответ через агентский роутер — LLM сама выбирает инструмент.
+
+        Args:
+            on_tool_call: async callback(tool_name, display_text) — вызывается
+                          когда агент решает использовать инструмент.
+        """
         self.conversation.add_user_message(user_id, question)
         history = self.conversation.get_context_string(user_id)
 
         answer = await self.agent.route(
             question, user_id=user_id, collection=collection,
             conversation_context=history,
+            on_tool_call=on_tool_call,
         )
         answer = answer.strip()
 

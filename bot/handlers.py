@@ -574,10 +574,32 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     try:
         if AGENT_MODE:
             # Агентский режим — LLM выбирает инструмент автоматически
-            answer = await pipeline.agent_answer(user_id, question.strip(), col)
-            await _safe_reply(update.message, answer)
+            status_message = None
 
-            # Сохраняем для inline-кнопок
+            async def _on_tool_call(tool_name: str, display_text: str) -> None:
+                nonlocal status_message
+                try:
+                    if status_message:
+                        await status_message.delete()
+                    status_message = await update.message.reply_text(
+                        display_text, parse_mode=ParseMode.MARKDOWN,
+                    )
+                except Exception:
+                    pass
+
+            answer = await pipeline.agent_answer(
+                user_id, question.strip(), col,
+                on_tool_call=_on_tool_call,
+            )
+
+            # Удаляем статус-сообщение
+            if status_message:
+                try:
+                    await status_message.delete()
+                except Exception:
+                    pass
+
+            await _safe_reply(update.message, answer)
             context.user_data["last_question"] = question.strip()
         else:
             # Классический режим — стриминг RAG

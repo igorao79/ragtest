@@ -3,10 +3,15 @@
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from agent.tools import ToolRegistry, ToolResult
 from rag.llm_client import OllamaClient
+
+# Тип callback-функции для уведомления о вызове инструмента
+# Принимает (tool_name, tool_description) и возвращает awaitable
+ToolNotifyCallback = Callable[[str, str], Awaitable[Any]]
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +48,16 @@ _JSON_PATTERN = re.compile(
     r'\{[^{}]*"tool"\s*:\s*"[^"]+"\s*,\s*"args"\s*:\s*\{[^{}]*\}[^{}]*\}',
     re.DOTALL,
 )
+
+
+# Красивые имена инструментов для отображения пользователю
+TOOL_DISPLAY = {
+    "rag_query":  ("📄", "Поиск по документам"),
+    "web_search": ("🌐", "Поиск в интернете"),
+    "calculator": ("🔢", "Калькулятор"),
+    "python":     ("🐍", "Выполнение кода"),
+    "weather":    ("🌤", "Проверка погоды"),
+}
 
 
 class AgentRouter:
@@ -98,26 +113,23 @@ class AgentRouter:
         user_id: int = 0,
         collection: str | None = None,
         conversation_context: str = "",
+        on_tool_call: ToolNotifyCallback | None = None,
     ) -> str:
         """Обработать вопрос пользователя через агентский цикл.
-
-        1. Отправляем вопрос в LLM с описанием инструментов
-        2. Если LLM вернула tool call — выполняем инструмент
-        3. Результат отправляем обратно в LLM для формирования ответа
-        4. Повторяем до MAX_TOOL_ROUNDS или пока LLM не ответит текстом
 
         Args:
             question: Вопрос пользователя.
             user_id: ID пользователя (для RAG).
             collection: Активная коллекция (для RAG).
             conversation_context: История диалога.
+            on_tool_call: Callback вызываемый при использовании инструмента.
+                          Принимает (tool_name, display_text).
 
         Returns:
             Финальный текстовый ответ.
         """
         system = self._build_system_prompt()
 
-        # Добавляем контекст диалога если есть
         prompt = question
         if conversation_context:
             prompt = f"История диалога:\n{conversation_context}\n\nВопрос: {question}"
@@ -128,11 +140,9 @@ class AgentRouter:
             response = await self.llm_client.generate(prompt, system=system)
             response = response.strip()
 
-            # Пробуем распарсить как tool call
             tool_call = self._parse_tool_call(response)
 
             if tool_call is None:
-                # LLM ответила обычным текстом — готово
                 logger.info("Агент: прямой ответ (без инструмента)")
                 return response
 
@@ -141,25 +151,27 @@ class AgentRouter:
 
             logger.info("Агент: вызов инструмента %s(%s)", tool_name, tool_args)
 
-            # Находим и выполняем инструмент
+            # Уведомляем о вызове инструмента
+            if on_tool_call:
+                icon, label = TOOL_DISPLAY.get(tool_name, ("🔧", tool_name))
+                display = f"{icon} *{label}*..."
+                await on_tool_call(tool_name, display)
+
             tool = self.registry.get(tool_name)
             if tool is None:
                 logger.warning("Агент: инструмент %s не найден", tool_name)
-                # Просим LLM ответить без инструмента
                 prompt = (
                     f"Инструмент '{tool_name}' не найден. "
                     f"Ответь на вопрос без инструментов: {question}"
                 )
                 continue
 
-            # Добавляем системные параметры
             tool_args["_user_id"] = user_id
             tool_args["_collection"] = collection
 
             result = await tool.execute(**tool_args)
 
             if result.success:
-                # Отправляем результат обратно в LLM
                 prompt = _TOOL_RESULT_PROMPT.format(
                     tool_name=tool_name,
                     result=result.data,
@@ -171,7 +183,6 @@ class AgentRouter:
                     f"Попробуй ответить на вопрос другим способом: {question}"
                 )
 
-        # Если исчерпали раунды — возвращаем последний ответ
         logger.warning("Агент: исчерпаны раунды, возвращаем последний ответ")
         return response
 
