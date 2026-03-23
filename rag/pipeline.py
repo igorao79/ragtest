@@ -2,10 +2,12 @@
 
 import logging
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from bot.config import (
     CACHE_MAX_SIZE,
     CACHE_TTL,
+    CHROMA_PERSIST_DIR,
     COMBINED_PROMPT_TEMPLATE,
     COMBINED_SYSTEM_PROMPT,
     CONVERSATION_MAX_MESSAGES,
@@ -30,6 +32,7 @@ from rag.conversation import ConversationMemory
 from rag.document_loader import DocumentLoader
 from rag.llm_client import OllamaClient
 from rag.reranker import LLMReranker
+from rag.sessions import SessionManager
 from rag.vector_store import VectorStore
 from rag.web_search import WebSearchClient
 from rag.whisper_client import WhisperClient
@@ -63,6 +66,11 @@ class RAGPipeline:
         )
         self.reranker = LLMReranker(llm_client) if RERANK_ENABLED else None
         self.whisper = WhisperClient(model_size=WHISPER_MODEL)
+        self.sessions = SessionManager(
+            persist_dir=vector_store.client._identifier
+            if hasattr(vector_store.client, '_identifier')
+            else str(Path(CHROMA_PERSIST_DIR)),
+        )
         self.agent = self._init_agent()
 
     def _init_agent(self):

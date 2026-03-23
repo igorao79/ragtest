@@ -3,6 +3,7 @@
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -32,46 +33,40 @@ _rate_limiter = RateLimiter(
 )
 
 _START_TEXT = (
-    "👋 *Привет! Я RAG-ассистент.*\n\n"
+    "👋 *Привет\\! Я RAG\\-ассистент\\.*\n\n"
     "Загрузи документы, и я буду отвечать на вопросы по их содержимому\\.\n\n"
     "📄 *Форматы:* PDF, DOCX, TXT, MD, CSV, XLSX\n"
     "🖼 *Изображения:* отправь фото для OCR\\-анализа\n"
-    "🎤 *Голос:* отправь голосовое — распознаю и отвечу по базе\n\n"
-    "*Команды:*\n"
-    "/help — подробная инструкция\n"
-    "/stats — статистика документов\n"
-    "/files — список загруженных файлов\n"
-    "/summary — пересказ всех документов\n"
-    "/search — поиск в интернете\n"
-    "/websearch — документы \\+ интернет\n"
-    "/collection — управление коллекциями\n"
-    "/clear — очистить все документы\n\n"
+    "🎤 *Голос:* отправь голосовое — распознаю и отвечу\n\n"
+    "🗂 *Сессии — начни с создания:*\n"
+    "`/create название` — создать сессию\n"
+    "`/sessions` — список сессий\n"
+    "`/switch название` — переключиться\n\n"
     "_Просто отправь файл, а затем задай вопрос\\!_"
 )
 
 _HELP_TEXT = (
     "📖 *Как пользоваться ботом:*\n\n"
-    "1\\. Отправьте файл — бот извлечёт текст и сохранит в базу знаний\\.\n"
-    "2\\. Задайте вопрос текстовым сообщением\\.\n"
-    "3\\. Отправьте фото — бот распознает текст через OCR\\.\n"
-    "4\\. Отправьте голосовое — бот распознает речь и ответит по базе\\.\n"
-    "5\\. Бот помнит контекст диалога — можно спрашивать «подробнее»\\.\n\n"
-    "*Команды:*\n"
-    "/start — приветствие\n"
-    "/help — эта инструкция\n"
-    "/stats — количество чанков в базе\n"
-    "/files — список файлов\n"
-    "/delete `имя_файла` — удалить файл\n"
-    "/url `ссылка` — загрузить веб\\-страницу\n"
-    "/summary — пересказ документов\n"
-    "/search `запрос` — поиск в интернете\n"
-    "/websearch `запрос` — документы \\+ интернет\n"
-    "/collection — управление коллекциями знаний\n"
-    "/clear — удалить всё\n\n"
+    "1\\. Создайте сессию: `/create работа`\n"
+    "2\\. Отправьте файл — бот сохранит в текущую сессию\\.\n"
+    "3\\. Задайте вопрос — бот сам выберет инструмент\\.\n"
+    "4\\. Фото → OCR, голосовое → распознавание речи\\.\n"
+    "5\\. Бот помнит контекст — можно спрашивать «подробнее»\\.\n\n"
+    "*🗂 Сессии:*\n"
+    "`/create название` — создать и переключиться\n"
+    "`/sessions` — список всех сессий\n"
+    "`/switch название` — переключиться\n"
+    "`/clear название` — удалить сессию\n\n"
+    "*📄 Документы:*\n"
+    "`/files` — список файлов в сессии\n"
+    "`/delete имя_файла` — удалить файл\n"
+    "`/url ссылка` — загрузить веб\\-страницу\n"
+    "`/summary` — пересказ документов\n"
+    "`/stats` — статистика\n\n"
     f"*Лимиты:*\n"
     f"• Макс\\. размер файла: {MAX_FILE_SIZE_MB} МБ\n"
     f"• Форматы: {', '.join(ALLOWED_EXTENSIONS)}\n"
-    f"• {RATE_LIMIT_MESSAGES} запросов в {RATE_LIMIT_WINDOW} сек\\.\n\n"
+    f"• Сессии удаляются через 7 дней неактивности\n\n"
     "_LLM работает локально — ваши данные не покидают сервер\\._"
 )
 
@@ -122,9 +117,9 @@ def _check_rate_limit(user_id: int) -> bool:
     return _rate_limiter.is_allowed(user_id)
 
 
-def _get_active_collection(context: ContextTypes.DEFAULT_TYPE) -> str | None:
-    """Получить активную коллекцию пользователя."""
-    return context.user_data.get("active_collection")
+def _get_session(pipeline: "RAGPipeline", user_id: int) -> str | None:
+    """Получить имя активной сессии пользователя."""
+    return pipeline.sessions.get_collection_name(user_id)
 
 
 def _get_inline_buttons(user_id: int) -> InlineKeyboardMarkup:
@@ -159,12 +154,12 @@ async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Обработчик /stats."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
-    col = _get_active_collection(context)
+    col = _get_session(pipeline, user_id)
     try:
         count = pipeline.vector_store.get_doc_count(user_id, col)
         files = pipeline.vector_store.get_file_list(user_id, col)
-        col_label = f" (коллекция: {col})" if col else ""
-        text = f"📊 В вашей базе знаний{col_label}: *{count}* чанков из *{len(files)}* файлов."
+        session_label = pipeline.sessions.get_active_display(user_id)
+        text = f"📊 Сессия «{session_label}»: *{count}* чанков из *{len(files)}* файлов."
         await _safe_reply(update.message, text)
     except Exception as e:
         logger.error("Ошибка при получении статистики: %s", e)
@@ -175,7 +170,7 @@ async def files_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Обработчик /files."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
-    col = _get_active_collection(context)
+    col = _get_session(pipeline, user_id)
     try:
         files = pipeline.vector_store.get_file_list(user_id, col)
         if not files:
@@ -196,7 +191,7 @@ async def delete_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Обработчик /delete <filename>."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
-    col = _get_active_collection(context)
+    col = _get_session(pipeline, user_id)
     filename = " ".join(context.args) if context.args else ""
 
     if not filename.strip():
@@ -226,7 +221,7 @@ async def url_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """Обработчик /url <ссылка>."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
-    col = _get_active_collection(context)
+    col = _get_session(pipeline, user_id)
     url = " ".join(context.args) if context.args else ""
 
     if not url.strip():
@@ -252,7 +247,7 @@ async def summary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """Обработчик /summary."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
-    col = _get_active_collection(context)
+    col = _get_session(pipeline, user_id)
 
     if not _check_rate_limit(user_id):
         await _safe_reply_md(update.message, _RATE_LIMIT_ERROR)
@@ -270,81 +265,130 @@ async def summary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def clear_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик /clear."""
+    """Обработчик /clear <название> — удаление сессии."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
-    col = _get_active_collection(context)
-    try:
-        pipeline.vector_store.delete_collection(user_id, col)
-        pipeline.cache.invalidate_user(user_id)
-        pipeline.conversation.clear(user_id)
-        label = f" (коллекция: {col})" if col else ""
-        await update.message.reply_text(f"🗑 Ваша база знаний{label} очищена.")
-    except Exception as e:
-        logger.error("Ошибка при очистке: %s", e)
-        await update.message.reply_text("Не удалось очистить базу знаний.")
+    name = " ".join(context.args) if context.args else ""
 
-
-async def collection_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик /collection — управление коллекциями.
-
-    /collection — показать текущую и список
-    /collection use <имя> — переключиться
-    /collection create <имя> — создать
-    /collection default — вернуться к основной
-    """
-    pipeline: RAGPipeline = context.bot_data["pipeline"]
-    user_id = update.effective_user.id
-    args = context.args or []
-
-    if not args:
-        # Показать текущую коллекцию и список
-        current = _get_active_collection(context) or "default"
-        collections = pipeline.vector_store.list_user_collections(user_id)
-        if not collections:
-            collections = ["default"]
-        lines = [f"📁 *Текущая коллекция:* `{current}`\n", "*Все коллекции:*"]
-        for c in collections:
-            marker = " ← текущая" if c == current else ""
-            count = pipeline.vector_store.get_doc_count(
-                user_id, None if c == "default" else c
-            )
-            lines.append(f"• `{c}` — {count} чанков{marker}")
-        lines.append("\n_Команды:_")
-        lines.append("`/collection use <имя>` — переключиться")
-        lines.append("`/collection create <имя>` — создать")
-        lines.append("`/collection default` — основная")
-        await _safe_reply(update.message, "\n".join(lines))
+    if not name.strip():
+        await update.message.reply_text(
+            "Укажите имя сессии для удаления.\n"
+            "Пример: `/clear работа`\n"
+            "Список сессий: /sessions",
+            parse_mode=ParseMode.MARKDOWN,
+        )
         return
 
-    action = args[0].lower()
-    name = args[1] if len(args) > 1 else ""
+    try:
+        # Удаляем коллекцию ChromaDB
+        col_name = pipeline.sessions._sanitize(name.strip())
+        pipeline.vector_store.delete_collection(user_id, col_name)
+        pipeline.cache.invalidate_user(user_id)
+        pipeline.conversation.clear(user_id)
 
-    if action == "default":
-        context.user_data.pop("active_collection", None)
-        await update.message.reply_text("📁 Переключено на основную коллекцию.")
+        # Удаляем сессию из менеджера
+        deleted = pipeline.sessions.delete(user_id, name.strip())
+        if deleted:
+            active = pipeline.sessions.get_active_display(user_id)
+            await update.message.reply_text(
+                f"🗑 Сессия «{name.strip()}» удалена.\n"
+                f"Активная сессия: {active}"
+            )
+        else:
+            await update.message.reply_text(
+                f"Сессия «{name.strip()}» не найдена. Проверьте /sessions."
+            )
+    except Exception as e:
+        logger.error("Ошибка при удалении сессии: %s", e)
+        await update.message.reply_text("Не удалось удалить сессию.")
 
-    elif action == "use" and name:
-        context.user_data["active_collection"] = name
-        count = pipeline.vector_store.get_doc_count(user_id, name)
+
+async def create_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик /create <название> — создание сессии."""
+    pipeline: RAGPipeline = context.bot_data["pipeline"]
+    user_id = update.effective_user.id
+    name = " ".join(context.args) if context.args else ""
+
+    if not name.strip():
         await update.message.reply_text(
-            f"📁 Коллекция «{name}» активна ({count} чанков)."
+            "Укажите название сессии.\nПример: `/create работа`",
+            parse_mode=ParseMode.MARKDOWN,
         )
+        return
 
-    elif action == "create" and name:
-        context.user_data["active_collection"] = name
-        pipeline.vector_store.get_or_create_collection(user_id, name)
+    try:
+        session = pipeline.sessions.create(user_id, name.strip())
+        # Создаём коллекцию в ChromaDB
+        pipeline.vector_store.get_or_create_collection(user_id, session.name)
+        count = pipeline.vector_store.get_doc_count(user_id, session.name)
         await update.message.reply_text(
-            f"📁 Коллекция «{name}» создана и активирована."
+            f"🗂 Сессия «{session.name}» создана и активна ({count} чанков).\n"
+            f"Теперь загружайте файлы и задавайте вопросы!"
+        )
+    except Exception as e:
+        logger.error("Ошибка создания сессии: %s", e)
+        await update.message.reply_text("Не удалось создать сессию.")
+
+
+async def switch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик /switch <название> — переключение сессии."""
+    pipeline: RAGPipeline = context.bot_data["pipeline"]
+    user_id = update.effective_user.id
+    name = " ".join(context.args) if context.args else ""
+
+    if not name.strip():
+        await update.message.reply_text(
+            "Укажите название сессии.\nПример: `/switch учёба`\n"
+            "Список сессий: /sessions",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    session = pipeline.sessions.switch(user_id, name.strip())
+    if session:
+        count = pipeline.vector_store.get_doc_count(user_id, session.name)
+        await update.message.reply_text(
+            f"🗂 Переключено на «{session.name}» ({count} чанков)."
         )
     else:
         await update.message.reply_text(
-            "Использование:\n"
-            "/collection — список коллекций\n"
-            "/collection use <имя> — переключиться\n"
-            "/collection create <имя> — создать\n"
-            "/collection default — основная"
+            f"Сессия «{name.strip()}» не найдена.\n"
+            f"Создайте: `/create {name.strip()}`\n"
+            f"Или посмотрите список: /sessions",
+            parse_mode=ParseMode.MARKDOWN,
         )
+
+
+async def sessions_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик /sessions — список всех сессий."""
+    pipeline: RAGPipeline = context.bot_data["pipeline"]
+    user_id = update.effective_user.id
+
+    sessions = pipeline.sessions.list_sessions(user_id)
+    if not sessions:
+        await update.message.reply_text(
+            "🗂 У вас нет сессий.\n"
+            "Создайте первую: `/create название`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    lines = ["🗂 *Ваши сессии:*\n"]
+    for s in sessions:
+        marker = " ✅" if s["active"] else ""
+        count = pipeline.vector_store.get_doc_count(
+            user_id, s["name"]
+        )
+        # Дней с последней активности
+        days_ago = (time.time() - s["last_active"]) / 86400
+        if days_ago < 1:
+            age = "сегодня"
+        else:
+            age = f"{int(days_ago)}д назад"
+        lines.append(f"• `{s['name']}` — {count} чанков, {age}{marker}")
+
+    lines.append(f"\n_Сессии удаляются через 7 дней неактивности._")
+    await _safe_reply(update.message, "\n".join(lines))
 
 
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -408,7 +452,7 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """Обработчик загрузки файлов."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
-    col = _get_active_collection(context)
+    col = _get_session(pipeline, user_id)
     document = update.message.document
 
     if document is None:
@@ -505,7 +549,7 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Обработчик голосовых сообщений — распознавание через Whisper."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
-    col = _get_active_collection(context)
+    col = _get_session(pipeline, user_id)
 
     if not _check_rate_limit(user_id):
         await _safe_reply_md(update.message, _RATE_LIMIT_ERROR)
@@ -559,7 +603,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
-    col = _get_active_collection(context)
+    col = _get_session(pipeline, user_id)
     question = update.message.text
 
     if not question or not question.strip():
@@ -658,7 +702,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = query.from_user.id
-    col = _get_active_collection(context)
+    col = _get_session(pipeline, user_id)
     last_question = context.user_data.get("last_question", "")
 
     if not last_question:

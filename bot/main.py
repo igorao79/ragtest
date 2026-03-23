@@ -36,7 +36,7 @@ def main() -> None:
     from bot.handlers import (
         callback_handler,
         clear_handler,
-        collection_handler,
+        create_handler,
         delete_handler,
         document_handler,
         files_handler,
@@ -44,9 +44,11 @@ def main() -> None:
         message_handler,
         photo_handler,
         search_handler,
+        sessions_handler,
         start_handler,
         stats_handler,
         summary_handler,
+        switch_handler,
         url_handler,
         voice_handler,
         websearch_handler,
@@ -60,11 +62,23 @@ def main() -> None:
     llm_client = OllamaClient(OLLAMA_BASE_URL, OLLAMA_MODEL)
     pipeline = RAGPipeline(vector_store, llm_client, CHUNK_SIZE, CHUNK_OVERLAP)
 
+    # Очистка истекших сессий при старте
+    expired = pipeline.sessions.cleanup_all_expired()
+    if expired:
+        for uid, name in expired:
+            vector_store.delete_collection(uid, name)
+        logger.info("Очищено %d истекших сессий", len(expired))
+
     logger.info("Ollama: %s, модель: %s", OLLAMA_BASE_URL, OLLAMA_MODEL)
 
     # Сборка Telegram-приложения
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.bot_data["pipeline"] = pipeline
+
+    # Сессии
+    app.add_handler(CommandHandler("create", create_handler))
+    app.add_handler(CommandHandler("switch", switch_handler))
+    app.add_handler(CommandHandler("sessions", sessions_handler))
 
     # Команды
     app.add_handler(CommandHandler("start", start_handler))
@@ -77,7 +91,6 @@ def main() -> None:
     app.add_handler(CommandHandler("clear", clear_handler))
     app.add_handler(CommandHandler("search", search_handler))
     app.add_handler(CommandHandler("websearch", websearch_handler))
-    app.add_handler(CommandHandler("collection", collection_handler))
 
     # Callback от inline-кнопок
     app.add_handler(CallbackQueryHandler(callback_handler))
