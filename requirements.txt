@@ -7,3 +7,5 @@ chardet>=5.0
 ddgs>=7.0
 openpyxl>=3.1
 beautifulsoup4>=4.12
+# Optional: voice recognition
+# openai-whisper>=20231117

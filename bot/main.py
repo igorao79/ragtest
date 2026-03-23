@@ -36,6 +36,7 @@ def main() -> None:
     from bot.handlers import (
         callback_handler,
         clear_handler,
+        collection_handler,
         delete_handler,
         document_handler,
         files_handler,
@@ -76,6 +77,7 @@ def main() -> None:
     app.add_handler(CommandHandler("clear", clear_handler))
     app.add_handler(CommandHandler("search", search_handler))
     app.add_handler(CommandHandler("websearch", websearch_handler))
+    app.add_handler(CommandHandler("collection", collection_handler))
 
     # Callback от inline-кнопок
     app.add_handler(CallbackQueryHandler(callback_handler))

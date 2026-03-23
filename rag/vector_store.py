@@ -1,4 +1,8 @@
-"""Обёртка над ChromaDB: добавление, поиск и удаление документов."""
+"""Обёртка над ChromaDB: добавление, поиск и удаление документов.
+
+Поддерживает мульти-коллекции — каждый пользователь может иметь
+несколько "папок" знаний (работа, учёба и т.д.).
+"""
 
 import logging
 
@@ -9,33 +13,44 @@ logger = logging.getLogger(__name__)
 
 
 class VectorStore:
-    """Управляет коллекциями ChromaDB — по одной на пользователя Telegram."""
+    """Управляет коллекциями ChromaDB — по одной+ на пользователя Telegram."""
 
     def __init__(self, persist_dir: str) -> None:
         self.client = chromadb.PersistentClient(path=persist_dir)
         logger.info("ChromaDB инициализирована: %s", persist_dir)
 
-    def get_or_create_collection(self, user_id: int) -> Collection:
+    def _collection_name(self, user_id: int, collection_name: str | None = None) -> str:
+        """Сформировать имя коллекции ChromaDB."""
+        if collection_name:
+            return f"user_{user_id}_{collection_name}"
+        return f"user_{user_id}"
+
+    def get_or_create_collection(
+        self, user_id: int, collection_name: str | None = None
+    ) -> Collection:
         """Получить или создать коллекцию для пользователя."""
-        name = f"user_{user_id}"
+        name = self._collection_name(user_id, collection_name)
         return self.client.get_or_create_collection(name=name)
 
     def add_documents(
-        self, user_id: int, chunks: list[str], metadata: list[dict]
+        self, user_id: int, chunks: list[str], metadata: list[dict],
+        collection_name: str | None = None,
     ) -> None:
         """Добавить чанки в коллекцию пользователя."""
-        collection = self.get_or_create_collection(user_id)
+        collection = self.get_or_create_collection(user_id, collection_name)
         ids = [f"{meta['source']}_{meta['chunk_index']}" for meta in metadata]
         collection.upsert(documents=chunks, metadatas=metadata, ids=ids)
         logger.info(
-            "Добавлено %d чанков в коллекцию user_%d", len(chunks), user_id
+            "Добавлено %d чанков в коллекцию %s",
+            len(chunks), collection.name,
         )
 
     def query(
-        self, user_id: int, question: str, top_k: int = 4
+        self, user_id: int, question: str, top_k: int = 4,
+        collection_name: str | None = None,
     ) -> list[dict]:
         """Найти ближайшие чанки по вопросу."""
-        collection = self.get_or_create_collection(user_id)
+        collection = self.get_or_create_collection(user_id, collection_name)
         if collection.count() == 0:
             return []
 
@@ -54,32 +69,33 @@ class VectorStore:
             for doc, meta, dist in zip(documents, metadatas, distances)
         ]
 
-    def delete_collection(self, user_id: int) -> None:
+    def delete_collection(
+        self, user_id: int, collection_name: str | None = None
+    ) -> None:
         """Удалить коллекцию пользователя."""
-        name = f"user_{user_id}"
+        name = self._collection_name(user_id, collection_name)
         try:
             self.client.delete_collection(name)
             logger.info("Коллекция %s удалена", name)
         except ValueError:
             logger.warning("Коллекция %s не найдена для удаления", name)
 
-    def get_doc_count(self, user_id: int) -> int:
+    def get_doc_count(
+        self, user_id: int, collection_name: str | None = None
+    ) -> int:
         """Получить количество чанков в коллекции пользователя."""
-        collection = self.get_or_create_collection(user_id)
+        collection = self.get_or_create_collection(user_id, collection_name)
         return collection.count()
 
-    def get_file_list(self, user_id: int) -> list[dict]:
-        """Получить список загруженных файлов с количеством чанков.
-
-        Returns:
-            Список словарей {name, chunks}.
-        """
-        collection = self.get_or_create_collection(user_id)
+    def get_file_list(
+        self, user_id: int, collection_name: str | None = None
+    ) -> list[dict]:
+        """Получить список загруженных файлов с количеством чанков."""
+        collection = self.get_or_create_collection(user_id, collection_name)
         count = collection.count()
         if count == 0:
             return []
 
-        # Получаем все метаданные
         result = collection.get(include=["metadatas"])
         metadatas = result.get("metadatas", [])
 
@@ -93,18 +109,11 @@ class VectorStore:
             for name, cnt in sorted(file_counts.items())
         ]
 
-    def delete_file(self, user_id: int, filename: str) -> int:
-        """Удалить конкретный файл из коллекции.
-
-        Args:
-            user_id: ID пользователя.
-            filename: Имя файла для удаления.
-
-        Returns:
-            Количество удалённых чанков.
-        """
-        collection = self.get_or_create_collection(user_id)
-        # Находим все ID с этим source
+    def delete_file(
+        self, user_id: int, filename: str, collection_name: str | None = None
+    ) -> int:
+        """Удалить конкретный файл из коллекции."""
+        collection = self.get_or_create_collection(user_id, collection_name)
         result = collection.get(
             where={"source": filename},
             include=["metadatas"],
@@ -114,12 +123,15 @@ class VectorStore:
             return 0
 
         collection.delete(ids=ids)
-        logger.info("Удалено %d чанков файла %s для user_%d", len(ids), filename, user_id)
+        logger.info("Удалено %d чанков файла %s из %s", len(ids), filename, collection.name)
         return len(ids)
 
-    def get_all_text(self, user_id: int, max_chars: int = 5000) -> str:
+    def get_all_text(
+        self, user_id: int, max_chars: int = 5000,
+        collection_name: str | None = None,
+    ) -> str:
         """Получить весь текст из коллекции для суммаризации."""
-        collection = self.get_or_create_collection(user_id)
+        collection = self.get_or_create_collection(user_id, collection_name)
         count = collection.count()
         if count == 0:
             return ""
@@ -139,3 +151,22 @@ class VectorStore:
             total += len(doc)
 
         return "\n\n".join(text_parts)
+
+    def list_user_collections(self, user_id: int) -> list[str]:
+        """Получить список коллекций пользователя.
+
+        Returns:
+            Список имён коллекций (без префикса user_ID_).
+        """
+        prefix = f"user_{user_id}"
+        all_collections = self.client.list_collections()
+        user_collections: list[str] = []
+        for col in all_collections:
+            name = col.name if hasattr(col, "name") else str(col)
+            if name.startswith(prefix):
+                suffix = name[len(prefix):]
+                if suffix == "":
+                    user_collections.append("default")
+                elif suffix.startswith("_"):
+                    user_collections.append(suffix[1:])
+        return sorted(user_collections)

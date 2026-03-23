@@ -46,6 +46,17 @@ RATE_LIMIT_WINDOW: int = int(_get_env("RATE_LIMIT_WINDOW", "60"))
 CACHE_TTL: int = int(_get_env("CACHE_TTL", "300"))
 CACHE_MAX_SIZE: int = int(_get_env("CACHE_MAX_SIZE", "100"))
 
+# Conversation memory
+CONVERSATION_MAX_MESSAGES: int = int(_get_env("CONVERSATION_MAX_MESSAGES", "10"))
+CONVERSATION_TTL: int = int(_get_env("CONVERSATION_TTL", "1800"))
+
+# Whisper
+WHISPER_MODEL: str = _get_env("WHISPER_MODEL", "base")
+
+# Reranking
+RERANK_ENABLED: bool = _get_env("RERANK_ENABLED", "true").lower() == "true"
+RERANK_FETCH_K: int = int(_get_env("RERANK_FETCH_K", "8"))
+
 # System prompt
 SYSTEM_PROMPT: str = (
     "Ты — полезный ассистент. Отвечай на вопросы пользователя "
@@ -56,7 +67,7 @@ SYSTEM_PROMPT: str = (
     "Используй Markdown для форматирования: **жирный**, *курсив*, `код`, списки."
 )
 
-PROMPT_TEMPLATE: str = "Контекст:\n---\n{context}\n---\n\nВопрос: {question}\n\nОтвет:"
+PROMPT_TEMPLATE: str = "Контекст:\n---\n{context}\n---\n\n{history}Вопрос: {question}\n\nОтвет:"
 
 SUMMARY_SYSTEM_PROMPT: str = (
     "Ты — полезный ассистент. Сделай краткий структурированный пересказ "

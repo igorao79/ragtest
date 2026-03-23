@@ -20,6 +20,7 @@ from rag.document_loader import DocumentLoadError
 from rag.llm_client import OllamaConnectionError, OllamaTimeoutError
 from rag.pipeline import RAGPipeline
 from rag.rate_limiter import RateLimiter
+from rag.whisper_client import WhisperError
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ _START_TEXT = (
     "Загрузи документы, и я буду отвечать на вопросы по их содержимому\\.\n\n"
     "📄 *Форматы:* PDF, DOCX, TXT, MD, CSV, XLSX\n"
     "🖼 *Изображения:* отправь фото для OCR\\-анализа\n"
-    "🎤 *Голос:* отправь голосовое для распознавания\n\n"
+    "🎤 *Голос:* отправь голосовое — распознаю и отвечу по базе\n\n"
     "*Команды:*\n"
     "/help — подробная инструкция\n"
     "/stats — статистика документов\n"
@@ -42,6 +43,7 @@ _START_TEXT = (
     "/summary — пересказ всех документов\n"
     "/search — поиск в интернете\n"
     "/websearch — документы \\+ интернет\n"
+    "/collection — управление коллекциями\n"
     "/clear — очистить все документы\n\n"
     "_Просто отправь файл, а затем задай вопрос\\!_"
 )
@@ -51,7 +53,8 @@ _HELP_TEXT = (
     "1\\. Отправьте файл — бот извлечёт текст и сохранит в базу знаний\\.\n"
     "2\\. Задайте вопрос текстовым сообщением\\.\n"
     "3\\. Отправьте фото — бот распознает текст через OCR\\.\n"
-    "4\\. Отправьте голосовое — бот расшифрует и ответит\\.\n\n"
+    "4\\. Отправьте голосовое — бот распознает речь и ответит по базе\\.\n"
+    "5\\. Бот помнит контекст диалога — можно спрашивать «подробнее»\\.\n\n"
     "*Команды:*\n"
     "/start — приветствие\n"
     "/help — эта инструкция\n"
@@ -62,6 +65,7 @@ _HELP_TEXT = (
     "/summary — пересказ документов\n"
     "/search `запрос` — поиск в интернете\n"
     "/websearch `запрос` — документы \\+ интернет\n"
+    "/collection — управление коллекциями знаний\n"
     "/clear — удалить всё\n\n"
     f"*Лимиты:*\n"
     f"• Макс\\. размер файла: {MAX_FILE_SIZE_MB} МБ\n"
@@ -92,17 +96,16 @@ def _split_message(text: str) -> list[str]:
 
 
 async def _safe_reply_md(message, text: str) -> None:
-    """Отправить сообщение с Markdown, fallback на plain text."""
+    """Отправить сообщение с MarkdownV2, fallback на plain text."""
     for part in _split_message(text):
         try:
             await message.reply_text(part, parse_mode=ParseMode.MARKDOWN_V2)
         except Exception:
-            # Если Markdown не парсится — отправляем без форматирования
             await message.reply_text(part)
 
 
 async def _safe_reply(message, text: str) -> None:
-    """Отправить сообщение с Markdown (обычный), fallback на plain text."""
+    """Отправить сообщение с Markdown, fallback на plain text."""
     for part in _split_message(text):
         try:
             await message.reply_text(
@@ -114,8 +117,13 @@ async def _safe_reply(message, text: str) -> None:
 
 
 def _check_rate_limit(user_id: int) -> bool:
-    """Проверить rate limit. Возвращает True если запрос разрешён."""
+    """Проверить rate limit."""
     return _rate_limiter.is_allowed(user_id)
+
+
+def _get_active_collection(context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    """Получить активную коллекцию пользователя."""
+    return context.user_data.get("active_collection")
 
 
 def _get_inline_buttons(user_id: int) -> InlineKeyboardMarkup:
@@ -150,10 +158,12 @@ async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Обработчик /stats."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
+    col = _get_active_collection(context)
     try:
-        count = pipeline.vector_store.get_doc_count(user_id)
-        files = pipeline.vector_store.get_file_list(user_id)
-        text = f"📊 В вашей базе знаний: *{count}* чанков из *{len(files)}* файлов."
+        count = pipeline.vector_store.get_doc_count(user_id, col)
+        files = pipeline.vector_store.get_file_list(user_id, col)
+        col_label = f" (коллекция: {col})" if col else ""
+        text = f"📊 В вашей базе знаний{col_label}: *{count}* чанков из *{len(files)}* файлов."
         await _safe_reply(update.message, text)
     except Exception as e:
         logger.error("Ошибка при получении статистики: %s", e)
@@ -161,15 +171,17 @@ async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def files_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик /files — список загруженных файлов."""
+    """Обработчик /files."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
+    col = _get_active_collection(context)
     try:
-        files = pipeline.vector_store.get_file_list(user_id)
+        files = pipeline.vector_store.get_file_list(user_id, col)
         if not files:
             await update.message.reply_text("📂 Ваша база знаний пуста.")
             return
-        lines = ["📂 *Загруженные файлы:*\n"]
+        col_label = f" (коллекция: {col})" if col else ""
+        lines = [f"📂 *Загруженные файлы{col_label}:*\n"]
         for f in files:
             lines.append(f"• `{f['name']}` — {f['chunks']} чанков")
         lines.append(f"\n_Всего: {sum(f['chunks'] for f in files)} чанков_")
@@ -183,6 +195,7 @@ async def delete_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Обработчик /delete <filename>."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
+    col = _get_active_collection(context)
     filename = " ".join(context.args) if context.args else ""
 
     if not filename.strip():
@@ -193,7 +206,7 @@ async def delete_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     try:
-        deleted = pipeline.vector_store.delete_file(user_id, filename.strip())
+        deleted = pipeline.vector_store.delete_file(user_id, filename.strip(), col)
         if deleted:
             pipeline.cache.invalidate_user(user_id)
             await update.message.reply_text(
@@ -209,9 +222,10 @@ async def delete_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def url_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик /url <ссылка> — загрузка веб-страницы."""
+    """Обработчик /url <ссылка>."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
+    col = _get_active_collection(context)
     url = " ".join(context.args) if context.args else ""
 
     if not url.strip():
@@ -222,7 +236,7 @@ async def url_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     await update.message.chat.send_action(ChatAction.TYPING)
     try:
-        chunk_count = await pipeline.ingest_url(user_id, url.strip())
+        chunk_count = await pipeline.ingest_url(user_id, url.strip(), col)
         await update.message.reply_text(
             f"🌐 Загружено {chunk_count} чанков с {url.strip()}"
         )
@@ -234,9 +248,10 @@ async def url_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def summary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик /summary — суммаризация всех документов."""
+    """Обработчик /summary."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
+    col = _get_active_collection(context)
 
     if not _check_rate_limit(user_id):
         await _safe_reply_md(update.message, _RATE_LIMIT_ERROR)
@@ -244,7 +259,7 @@ async def summary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     await update.message.chat.send_action(ChatAction.TYPING)
     try:
-        answer = await pipeline.summarize(user_id)
+        answer = await pipeline.summarize(user_id, col)
         await _safe_reply(update.message, answer)
     except (OllamaConnectionError, OllamaTimeoutError):
         await _safe_reply_md(update.message, _OLLAMA_ERROR)
@@ -257,17 +272,82 @@ async def clear_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Обработчик /clear."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
+    col = _get_active_collection(context)
     try:
-        pipeline.vector_store.delete_collection(user_id)
+        pipeline.vector_store.delete_collection(user_id, col)
         pipeline.cache.invalidate_user(user_id)
-        await update.message.reply_text("🗑 Ваша база знаний очищена.")
+        pipeline.conversation.clear(user_id)
+        label = f" (коллекция: {col})" if col else ""
+        await update.message.reply_text(f"🗑 Ваша база знаний{label} очищена.")
     except Exception as e:
         logger.error("Ошибка при очистке: %s", e)
         await update.message.reply_text("Не удалось очистить базу знаний.")
 
 
+async def collection_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик /collection — управление коллекциями.
+
+    /collection — показать текущую и список
+    /collection use <имя> — переключиться
+    /collection create <имя> — создать
+    /collection default — вернуться к основной
+    """
+    pipeline: RAGPipeline = context.bot_data["pipeline"]
+    user_id = update.effective_user.id
+    args = context.args or []
+
+    if not args:
+        # Показать текущую коллекцию и список
+        current = _get_active_collection(context) or "default"
+        collections = pipeline.vector_store.list_user_collections(user_id)
+        if not collections:
+            collections = ["default"]
+        lines = [f"📁 *Текущая коллекция:* `{current}`\n", "*Все коллекции:*"]
+        for c in collections:
+            marker = " ← текущая" if c == current else ""
+            count = pipeline.vector_store.get_doc_count(
+                user_id, None if c == "default" else c
+            )
+            lines.append(f"• `{c}` — {count} чанков{marker}")
+        lines.append("\n_Команды:_")
+        lines.append("`/collection use <имя>` — переключиться")
+        lines.append("`/collection create <имя>` — создать")
+        lines.append("`/collection default` — основная")
+        await _safe_reply(update.message, "\n".join(lines))
+        return
+
+    action = args[0].lower()
+    name = args[1] if len(args) > 1 else ""
+
+    if action == "default":
+        context.user_data.pop("active_collection", None)
+        await update.message.reply_text("📁 Переключено на основную коллекцию.")
+
+    elif action == "use" and name:
+        context.user_data["active_collection"] = name
+        count = pipeline.vector_store.get_doc_count(user_id, name)
+        await update.message.reply_text(
+            f"📁 Коллекция «{name}» активна ({count} чанков)."
+        )
+
+    elif action == "create" and name:
+        context.user_data["active_collection"] = name
+        pipeline.vector_store.get_or_create_collection(user_id, name)
+        await update.message.reply_text(
+            f"📁 Коллекция «{name}» создана и активирована."
+        )
+    else:
+        await update.message.reply_text(
+            "Использование:\n"
+            "/collection — список коллекций\n"
+            "/collection use <имя> — переключиться\n"
+            "/collection create <имя> — создать\n"
+            "/collection default — основная"
+        )
+
+
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик /search — поиск в интернете."""
+    """Обработчик /search."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
     query = " ".join(context.args) if context.args else ""
@@ -294,7 +374,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def websearch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик /websearch — документы + интернет."""
+    """Обработчик /websearch."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
     query = " ".join(context.args) if context.args else ""
@@ -327,6 +407,7 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """Обработчик загрузки файлов."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
+    col = _get_active_collection(context)
     document = update.message.document
 
     if document is None:
@@ -357,9 +438,10 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             tmp_path = tmp.name
             await file.download_to_drive(tmp_path)
 
-        chunk_count = await pipeline.ingest(user_id, tmp_path, filename)
+        chunk_count = await pipeline.ingest(user_id, tmp_path, filename, col)
+        col_label = f" в коллекцию «{col}»" if col else ""
         await update.message.reply_text(
-            f"✅ Загружено {chunk_count} чанков из файла «{filename}»."
+            f"✅ Загружено {chunk_count} чанков из файла «{filename}»{col_label}."
         )
 
         # Если файл отправлен с подписью — ответить на вопрос
@@ -367,7 +449,7 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if caption and caption.strip():
             await update.message.chat.send_action(ChatAction.TYPING)
             try:
-                answer = await pipeline.answer(user_id, caption.strip())
+                answer = await pipeline.answer(user_id, caption.strip(), col)
                 await _safe_reply(update.message, answer)
             except (OllamaConnectionError, OllamaTimeoutError):
                 await _safe_reply_md(update.message, _OLLAMA_ERROR)
@@ -391,7 +473,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _safe_reply_md(update.message, _RATE_LIMIT_ERROR)
         return
 
-    photo = update.message.photo[-1]  # Наибольшее разрешение
+    photo = update.message.photo[-1]
     caption = update.message.caption or "Опиши что на этом изображении. Извлеки весь текст."
 
     await update.message.chat.send_action(ChatAction.TYPING)
@@ -419,9 +501,10 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик голосовых сообщений — распознавание через Whisper/Ollama."""
+    """Обработчик голосовых сообщений — распознавание через Whisper."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
+    col = _get_active_collection(context)
 
     if not _check_rate_limit(user_id):
         await _safe_reply_md(update.message, _RATE_LIMIT_ERROR)
@@ -440,33 +523,27 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             tmp_path = tmp.name
             await file.download_to_drive(tmp_path)
 
-        # Транскрибируем через Ollama Whisper API
-        import httpx
-        from bot.config import OLLAMA_BASE_URL
+        # Транскрибируем
+        text = await pipeline.transcribe_voice(tmp_path)
+        await update.message.reply_text(f"🎤 Распознано: _{text}_", parse_mode=ParseMode.MARKDOWN)
 
-        audio_data = Path(tmp_path).read_bytes()
-
-        # Используем Ollama /api/generate с audio — если модель поддерживает
-        # Fallback: отправляем описание что это голосовое
-        import base64
-        b64_audio = base64.b64encode(audio_data).decode("utf-8")
-
-        # Пробуем через vision-модель (qwen3-vl поддерживает аудио)
-        answer = await pipeline.llm_client.generate(
-            "Пользователь отправил голосовое сообщение. "
-            "К сожалению, прямая транскрипция аудио пока не поддерживается. "
-            "Попросите пользователя написать вопрос текстом.",
-            system="Ты — ассистент. Сообщи пользователю что голосовые сообщения "
-            "пока не поддерживаются и попроси написать текстом.",
-        )
+        # Отвечаем на распознанный текст как на обычный вопрос
+        await update.message.chat.send_action(ChatAction.TYPING)
+        answer = await pipeline.answer(user_id, text, col)
         await _safe_reply(update.message, answer)
 
+    except WhisperError as e:
+        logger.warning("Whisper ошибка: %s", e)
+        await update.message.reply_text(
+            f"🎤 Не удалось распознать речь: {e}\n"
+            "Попробуйте написать вопрос текстом."
+        )
     except (OllamaConnectionError, OllamaTimeoutError):
         await _safe_reply_md(update.message, _OLLAMA_ERROR)
     except Exception as e:
         logger.error("Ошибка обработки голоса: %s", e, exc_info=True)
         await update.message.reply_text(
-            "🎤 Голосовые сообщения пока не поддерживаются. Напишите вопрос текстом."
+            "🎤 Ошибка при обработке голосового сообщения. Напишите вопрос текстом."
         )
     finally:
         if tmp_path and os.path.exists(tmp_path):
@@ -477,6 +554,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """Обработчик текстовых сообщений — вопросы к RAG со стримингом."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
+    col = _get_active_collection(context)
     question = update.message.text
 
     if not question or not question.strip():
@@ -486,7 +564,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await _safe_reply_md(update.message, _RATE_LIMIT_ERROR)
         return
 
-    # Проверяем кеш — если есть, отвечаем сразу
+    # Проверяем кеш
     cached = pipeline.cache.get(user_id, question.strip())
     if cached:
         await _safe_reply(update.message, cached)
@@ -501,11 +579,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         last_sent = ""
         chunk_count = 0
 
-        async for token in pipeline.answer_stream(user_id, question.strip()):
+        async for token in pipeline.answer_stream(user_id, question.strip(), col):
             buffer += token
             chunk_count += 1
 
-            # Обновляем сообщение каждые ~15 токенов
             if chunk_count % 15 == 0 and buffer.strip() != last_sent:
                 try:
                     if sent_message is None:
@@ -516,7 +593,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 except Exception:
                     pass
 
-        # Финальное обновление
         final_text = buffer.strip()
         if final_text:
             if sent_message is None:
@@ -527,9 +603,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 except Exception:
                     pass
 
-            # Inline-кнопки после ответа
             try:
-                # Сохраняем последний вопрос в user_data
                 context.user_data["last_question"] = question.strip()
                 buttons = _get_inline_buttons(user_id)
                 await sent_message.edit_reply_markup(reply_markup=buttons)
@@ -550,6 +624,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = query.from_user.id
+    col = _get_active_collection(context)
     last_question = context.user_data.get("last_question", "")
 
     if not last_question:
@@ -569,7 +644,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         elif query.data == "more_detail":
             detailed_q = f"Ответь подробнее на вопрос: {last_question}"
-            answer = await pipeline.answer(user_id, detailed_q)
+            answer = await pipeline.answer(user_id, detailed_q, col)
             await _safe_reply(query.message, answer)
 
     except (OllamaConnectionError, OllamaTimeoutError):
