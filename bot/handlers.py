@@ -122,6 +122,65 @@ def _get_session(pipeline: "RAGPipeline", user_id: int) -> str | None:
     return pipeline.sessions.get_collection_name(user_id)
 
 
+async def _ensure_session(
+    pipeline: "RAGPipeline", user_id: int, message
+) -> str | None:
+    """Проверить наличие сессии. Если нет — мигрировать старые данные или подсказать.
+
+    Возвращает имя коллекции (или None для legacy).
+    """
+    col = _get_session(pipeline, user_id)
+    if col is not None:
+        return col
+
+    # Нет активной сессии — проверяем, есть ли старые данные без сессии
+    legacy_count = pipeline.vector_store.get_doc_count(user_id, None)
+
+    if legacy_count > 0:
+        # Автоматически мигрируем в сессию "default"
+        pipeline.sessions.create(user_id, "default")
+        # Данные уже в коллекции user_{id} — а сессия "default" создаст user_{id}_default
+        # Нужно перенести данные
+        _migrate_legacy_data(pipeline, user_id)
+        await message.reply_text(
+            f"📦 Найдено {legacy_count} чанков из прошлых загрузок.\n"
+            f"Перенесено в сессию «default».\n\n"
+            f"Создайте новые сессии: `/create название`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return "default"
+
+    # Нет данных, нет сессии — просто подсказка
+    return None
+
+
+def _migrate_legacy_data(pipeline: "RAGPipeline", user_id: int) -> None:
+    """Перенести данные из legacy-коллекции user_{id} в сессию default."""
+    try:
+        old_collection = pipeline.vector_store.get_or_create_collection(user_id, None)
+        if old_collection.count() == 0:
+            return
+
+        # Получаем всё из старой коллекции
+        data = old_collection.get(include=["documents", "metadatas"])
+        ids = data.get("ids", [])
+        docs = data.get("documents", [])
+        metas = data.get("metadatas", [])
+
+        if not ids:
+            return
+
+        # Добавляем в новую коллекцию (default)
+        new_collection = pipeline.vector_store.get_or_create_collection(user_id, "default")
+        new_collection.upsert(ids=ids, documents=docs, metadatas=metas)
+
+        # Удаляем старую
+        pipeline.vector_store.delete_collection(user_id, None)
+        logger.info("Мигрировано %d чанков в сессию default для user_%d", len(ids), user_id)
+    except Exception as e:
+        logger.error("Ошибка миграции legacy данных: %s", e)
+
+
 def _get_inline_buttons(user_id: int) -> InlineKeyboardMarkup:
     """Создать inline-кнопки после ответа."""
     buttons = [
@@ -452,7 +511,7 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """Обработчик загрузки файлов."""
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
-    col = _get_session(pipeline, user_id)
+    col = await _ensure_session(pipeline, user_id, update.message)
     document = update.message.document
 
     if document is None:
@@ -603,11 +662,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
-    col = _get_session(pipeline, user_id)
     question = update.message.text
 
     if not question or not question.strip():
         return
+
+    col = await _ensure_session(pipeline, user_id, update.message)
 
     if not _check_rate_limit(user_id):
         await _safe_reply_md(update.message, _RATE_LIMIT_ERROR)
