@@ -423,6 +423,9 @@ async def sessions_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
 
+    # Автомиграция старых данных
+    await _ensure_session(pipeline, user_id, update.message)
+
     sessions = pipeline.sessions.list_sessions(user_id)
     if not sessions:
         await update.message.reply_text(
