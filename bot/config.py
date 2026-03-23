@@ -57,6 +57,9 @@ WHISPER_MODEL: str = _get_env("WHISPER_MODEL", "base")
 RERANK_ENABLED: bool = _get_env("RERANK_ENABLED", "true").lower() == "true"
 RERANK_FETCH_K: int = int(_get_env("RERANK_FETCH_K", "8"))
 
+# Agent mode — LLM автоматически выбирает инструменты
+AGENT_MODE: bool = _get_env("AGENT_MODE", "true").lower() == "true"
+
 # System prompt
 SYSTEM_PROMPT: str = (
     "Ты — полезный ассистент. Отвечай на вопросы пользователя "

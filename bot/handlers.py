@@ -10,6 +10,7 @@ from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ContextTypes
 
 from bot.config import (
+    AGENT_MODE,
     ALLOWED_EXTENSIONS,
     MAX_FILE_SIZE_MB,
     OLLAMA_VISION_MODEL,
@@ -551,7 +552,11 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик текстовых сообщений — вопросы к RAG со стримингом."""
+    """Обработчик текстовых сообщений.
+
+    В режиме AGENT_MODE LLM сама решает какой инструмент использовать.
+    В обычном режиме — стриминг RAG-ответа.
+    """
     pipeline: RAGPipeline = context.bot_data["pipeline"]
     user_id = update.effective_user.id
     col = _get_active_collection(context)
@@ -564,51 +569,58 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await _safe_reply_md(update.message, _RATE_LIMIT_ERROR)
         return
 
-    # Проверяем кеш
-    cached = pipeline.cache.get(user_id, question.strip())
-    if cached:
-        await _safe_reply(update.message, cached)
-        return
-
     await update.message.chat.send_action(ChatAction.TYPING)
 
     try:
-        # Стриминг: отправляем сообщение и обновляем его
-        sent_message = None
-        buffer = ""
-        last_sent = ""
-        chunk_count = 0
+        if AGENT_MODE:
+            # Агентский режим — LLM выбирает инструмент автоматически
+            answer = await pipeline.agent_answer(user_id, question.strip(), col)
+            await _safe_reply(update.message, answer)
 
-        async for token in pipeline.answer_stream(user_id, question.strip(), col):
-            buffer += token
-            chunk_count += 1
+            # Сохраняем для inline-кнопок
+            context.user_data["last_question"] = question.strip()
+        else:
+            # Классический режим — стриминг RAG
+            cached = pipeline.cache.get(user_id, question.strip())
+            if cached:
+                await _safe_reply(update.message, cached)
+                return
 
-            if chunk_count % 15 == 0 and buffer.strip() != last_sent:
+            sent_message = None
+            buffer = ""
+            last_sent = ""
+            chunk_count = 0
+
+            async for token in pipeline.answer_stream(user_id, question.strip(), col):
+                buffer += token
+                chunk_count += 1
+
+                if chunk_count % 15 == 0 and buffer.strip() != last_sent:
+                    try:
+                        if sent_message is None:
+                            sent_message = await update.message.reply_text(buffer.strip() + " ▌")
+                        else:
+                            await sent_message.edit_text(buffer.strip() + " ▌")
+                        last_sent = buffer.strip()
+                    except Exception:
+                        pass
+
+            final_text = buffer.strip()
+            if final_text:
+                if sent_message is None:
+                    sent_message = await update.message.reply_text(final_text)
+                else:
+                    try:
+                        await sent_message.edit_text(final_text)
+                    except Exception:
+                        pass
+
                 try:
-                    if sent_message is None:
-                        sent_message = await update.message.reply_text(buffer.strip() + " ▌")
-                    else:
-                        await sent_message.edit_text(buffer.strip() + " ▌")
-                    last_sent = buffer.strip()
+                    context.user_data["last_question"] = question.strip()
+                    buttons = _get_inline_buttons(user_id)
+                    await sent_message.edit_reply_markup(reply_markup=buttons)
                 except Exception:
                     pass
-
-        final_text = buffer.strip()
-        if final_text:
-            if sent_message is None:
-                sent_message = await update.message.reply_text(final_text)
-            else:
-                try:
-                    await sent_message.edit_text(final_text)
-                except Exception:
-                    pass
-
-            try:
-                context.user_data["last_question"] = question.strip()
-                buttons = _get_inline_buttons(user_id)
-                await sent_message.edit_reply_markup(reply_markup=buttons)
-            except Exception:
-                pass
 
     except (OllamaConnectionError, OllamaTimeoutError):
         await _safe_reply_md(update.message, _OLLAMA_ERROR)

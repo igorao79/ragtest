@@ -63,6 +63,25 @@ class RAGPipeline:
         )
         self.reranker = LLMReranker(llm_client) if RERANK_ENABLED else None
         self.whisper = WhisperClient(model_size=WHISPER_MODEL)
+        self.agent = self._init_agent()
+
+    def _init_agent(self):
+        """Инициализировать агентский роутер с инструментами."""
+        from agent.router import AgentRouter
+        from agent.tool_calc import CalculatorTool
+        from agent.tool_python import PythonExecTool
+        from agent.tool_rag import RAGQueryTool
+        from agent.tool_weather import WeatherTool
+        from agent.tool_web import WebSearchTool
+        from agent.tools import ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(RAGQueryTool(self))
+        registry.register(WebSearchTool(self))
+        registry.register(CalculatorTool())
+        registry.register(PythonExecTool())
+        registry.register(WeatherTool())
+        return AgentRouter(self.llm_client, registry)
 
     def _build_context(self, results: list[dict], max_length: int | None = None) -> str:
         """Собрать контекст из результатов поиска."""
@@ -233,6 +252,40 @@ class RAGPipeline:
     async def transcribe_voice(self, audio_path: str) -> str:
         """Транскрибировать голосовое сообщение."""
         return await self.whisper.transcribe(audio_path)
+
+    async def agent_answer(
+        self, user_id: int, question: str, collection: str | None = None
+    ) -> str:
+        """Ответ через агентский роутер — LLM сама выбирает инструмент."""
+        self.conversation.add_user_message(user_id, question)
+        history = self.conversation.get_context_string(user_id)
+
+        answer = await self.agent.route(
+            question, user_id=user_id, collection=collection,
+            conversation_context=history,
+        )
+        answer = answer.strip()
+
+        self.conversation.add_assistant_message(user_id, answer)
+        return answer
+
+    async def agent_answer_stream(
+        self, user_id: int, question: str, collection: str | None = None
+    ) -> AsyncIterator[str]:
+        """Стриминг ответа через агентский роутер."""
+        self.conversation.add_user_message(user_id, question)
+        history = self.conversation.get_context_string(user_id)
+
+        full_answer = []
+        async for token in self.agent.route_stream(
+            question, user_id=user_id, collection=collection,
+            conversation_context=history,
+        ):
+            full_answer.append(token)
+            yield token
+
+        final = "".join(full_answer).strip()
+        self.conversation.add_assistant_message(user_id, final)
 
     async def _make_search_query(self, question: str) -> str:
         """Попросить LLM сформулировать поисковый запрос."""
