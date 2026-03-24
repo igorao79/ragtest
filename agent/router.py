@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 _MAX_TOOL_ROUNDS = 3  # Максимум цепочек вызовов
 
 _ROUTER_SYSTEM_PROMPT = """Ты — умный ассистент с доступом к инструментам.
+Сегодня: {today}.
 
 ГЛАВНОЕ ПРАВИЛО: Если ты УВЕРЕН в ответе — отвечай СРАЗУ текстом, БЕЗ инструментов.
 Ты уже знаешь общеизвестные факты: столицы, президенты, история, наука, математика.
@@ -79,8 +80,10 @@ class AgentRouter:
 
     def _build_system_prompt(self) -> str:
         """Построить системный промпт с описанием инструментов."""
+        from datetime import date
         return _ROUTER_SYSTEM_PROMPT.format(
-            tools_description=self.registry.get_tools_prompt()
+            tools_description=self.registry.get_tools_prompt(),
+            today=date.today().strftime("%d.%m.%Y"),
         )
 
     def _parse_tool_call(self, response: str) -> dict | None:
