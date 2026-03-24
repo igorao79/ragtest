@@ -60,6 +60,10 @@ RERANK_FETCH_K: int = int(_get_env("RERANK_FETCH_K", "8"))
 # Agent mode — LLM автоматически выбирает инструменты
 AGENT_MODE: bool = _get_env("AGENT_MODE", "true").lower() == "true"
 
+# Groq API (бесплатный, быстрый, мощные модели)
+GROQ_API_KEY: str = _get_env("GROQ_API_KEY", "")
+GROQ_MODEL: str = _get_env("GROQ_MODEL", "llama-3.3-70b-versatile")
+
 # System prompt
 SYSTEM_PROMPT: str = (
     "Ты — полезный ассистент. Отвечай на вопросы пользователя "

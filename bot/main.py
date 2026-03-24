@@ -29,6 +29,8 @@ def main() -> None:
         CHROMA_PERSIST_DIR,
         CHUNK_OVERLAP,
         CHUNK_SIZE,
+        GROQ_API_KEY,
+        GROQ_MODEL,
         OLLAMA_BASE_URL,
         OLLAMA_MODEL,
         TELEGRAM_BOT_TOKEN,
@@ -59,7 +61,21 @@ def main() -> None:
 
     # Инициализация компонентов
     vector_store = VectorStore(CHROMA_PERSIST_DIR)
-    llm_client = OllamaClient(OLLAMA_BASE_URL, OLLAMA_MODEL)
+    ollama_client = OllamaClient(OLLAMA_BASE_URL, OLLAMA_MODEL)
+
+    # Groq API (основной) + Ollama (fallback / vision)
+    if GROQ_API_KEY:
+        from rag.groq_client import GroqClient
+        llm_client = GroqClient(
+            api_key=GROQ_API_KEY,
+            model=GROQ_MODEL,
+            fallback=ollama_client,
+        )
+        logger.info("LLM: Groq (%s) + Ollama fallback (%s)", GROQ_MODEL, OLLAMA_MODEL)
+    else:
+        llm_client = ollama_client
+        logger.info("LLM: Ollama (%s)", OLLAMA_MODEL)
+
     pipeline = RAGPipeline(vector_store, llm_client, CHUNK_SIZE, CHUNK_OVERLAP)
 
     # Очистка истекших сессий при старте
@@ -68,8 +84,6 @@ def main() -> None:
         for uid, name in expired:
             vector_store.delete_collection(uid, name)
         logger.info("Очищено %d истекших сессий", len(expired))
-
-    logger.info("Ollama: %s, модель: %s", OLLAMA_BASE_URL, OLLAMA_MODEL)
 
     # Сборка Telegram-приложения
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
