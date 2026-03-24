@@ -8,5 +8,6 @@ ddgs>=7.0
 openpyxl>=3.1
 beautifulsoup4>=4.12
 groq>=0.9
+ollama>=0.4
 # Optional: voice recognition
 # openai-whisper>=20231117

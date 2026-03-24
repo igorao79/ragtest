@@ -19,6 +19,7 @@ TELEGRAM_BOT_TOKEN: str = _get_env("TELEGRAM_BOT_TOKEN", required=True)
 OLLAMA_BASE_URL: str = _get_env("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL: str = _get_env("OLLAMA_MODEL", "gemma3:4b")
 OLLAMA_VISION_MODEL: str = _get_env("OLLAMA_VISION_MODEL", "qwen3-vl:8b")
+OLLAMA_EMBED_MODEL: str = _get_env("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
 # ChromaDB
 CHROMA_PERSIST_DIR: str = _get_env(

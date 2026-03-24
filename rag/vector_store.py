@@ -2,6 +2,8 @@
 
 Поддерживает мульти-коллекции — каждый пользователь может иметь
 несколько "папок" знаний (работа, учёба и т.д.).
+
+Использует nomic-embed-text через Ollama для качественных эмбеддингов.
 """
 
 import logging
@@ -12,11 +14,44 @@ from chromadb import Collection
 logger = logging.getLogger(__name__)
 
 
+def _create_embedding_function(
+    ollama_url: str = "http://localhost:11434",
+    model_name: str = "nomic-embed-text",
+):
+    """Создать embedding function через Ollama.
+
+    Если Ollama недоступна — fallback на дефолтные эмбеддинги ChromaDB.
+    """
+    try:
+        from chromadb.utils.embedding_functions.ollama_embedding_function import (
+            OllamaEmbeddingFunction,
+        )
+        ef = OllamaEmbeddingFunction(
+            url=ollama_url,
+            model_name=model_name,
+        )
+        # Проверяем что Ollama отвечает
+        ef(["test"])
+        logger.info("Эмбеддинги: %s через Ollama", model_name)
+        return ef
+    except Exception as e:
+        logger.warning(
+            "Ollama эмбеддинги недоступны (%s), используем дефолтные ChromaDB: %s",
+            model_name, e,
+        )
+        return None
+
+
 class VectorStore:
     """Управляет коллекциями ChromaDB — по одной+ на пользователя Telegram."""
 
-    def __init__(self, persist_dir: str) -> None:
+    def __init__(
+        self, persist_dir: str,
+        ollama_url: str = "http://localhost:11434",
+        embedding_model: str = "nomic-embed-text",
+    ) -> None:
         self.client = chromadb.PersistentClient(path=persist_dir)
+        self._embedding_fn = _create_embedding_function(ollama_url, embedding_model)
         logger.info("ChromaDB инициализирована: %s", persist_dir)
 
     def _collection_name(self, user_id: int, collection_name: str | None = None) -> str:
@@ -30,7 +65,10 @@ class VectorStore:
     ) -> Collection:
         """Получить или создать коллекцию для пользователя."""
         name = self._collection_name(user_id, collection_name)
-        return self.client.get_or_create_collection(name=name)
+        kwargs = {"name": name}
+        if self._embedding_fn is not None:
+            kwargs["embedding_function"] = self._embedding_fn
+        return self.client.get_or_create_collection(**kwargs)
 
     def add_documents(
         self, user_id: int, chunks: list[str], metadata: list[dict],

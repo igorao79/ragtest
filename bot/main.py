@@ -32,6 +32,7 @@ def main() -> None:
         GROQ_API_KEY,
         GROQ_MODEL,
         OLLAMA_BASE_URL,
+        OLLAMA_EMBED_MODEL,
         OLLAMA_MODEL,
         TELEGRAM_BOT_TOKEN,
     )
@@ -60,7 +61,11 @@ def main() -> None:
     from rag.vector_store import VectorStore
 
     # Инициализация компонентов
-    vector_store = VectorStore(CHROMA_PERSIST_DIR)
+    vector_store = VectorStore(
+        CHROMA_PERSIST_DIR,
+        ollama_url=OLLAMA_BASE_URL,
+        embedding_model=OLLAMA_EMBED_MODEL,
+    )
     ollama_client = OllamaClient(OLLAMA_BASE_URL, OLLAMA_MODEL)
 
     # Groq API (основной) + Ollama (fallback / vision)
