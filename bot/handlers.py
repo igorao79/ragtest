@@ -704,7 +704,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 try:
                     await status_message.delete()
                 except Exception:
-                    pass
+                    # Если нет прав на удаление — редактируем в пустоту
+                    try:
+                        await status_message.edit_text("✅")
+                    except Exception:
+                        pass
 
             await _safe_reply(update.message, answer)
             context.user_data["last_question"] = question.strip()
