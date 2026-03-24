@@ -169,8 +169,30 @@ class TestToolRegistry:
 class TestRouterParsing:
     def _make_router(self):
         from agent.router import AgentRouter
-        # Mock — не нужен для тестов парсинга
+        from agent.tool_calc import CalculatorTool
+        from agent.tool_web import WebSearchTool
+        from agent.tool_weather import WeatherTool
+        from agent.tools import ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(CalculatorTool())
+        # WebSearchTool and WeatherTool need pipeline, use mock
+        class FakeWebSearch(WebSearchTool):
+            def __init__(self):
+                self.name = "web_search"
+                self.description = "search"
+                self.params = WebSearchTool.params
+        class FakeWeather(WeatherTool):
+            def __init__(self):
+                self.name = "weather"
+                self.description = "weather"
+                self.params = WeatherTool.params
+
+        registry.register(FakeWebSearch())
+        registry.register(FakeWeather())
+
         router = AgentRouter.__new__(AgentRouter)
+        router.registry = registry
         return router
 
     def test_parse_json_tool_call(self):
@@ -204,3 +226,26 @@ class TestRouterParsing:
     def test_parse_empty(self):
         router = self._make_router()
         assert router._parse_tool_call("") is None
+
+    def test_parse_colon_format(self):
+        """LLM пишет web_search: "запрос" вместо JSON."""
+        router = self._make_router()
+        result = router._parse_tool_call('web_search: "выборы губернатора Тула 2026"')
+        assert result is not None
+        assert result["tool"] == "web_search"
+        assert result["args"]["query"] == "выборы губернатора Тула 2026"
+
+    def test_parse_paren_format(self):
+        """LLM пишет calculator("2+2") вместо JSON."""
+        router = self._make_router()
+        result = router._parse_tool_call('calculator("2+2")')
+        assert result is not None
+        assert result["tool"] == "calculator"
+        assert result["args"]["expression"] == "2+2"
+
+    def test_parse_colon_single_quotes(self):
+        router = self._make_router()
+        result = router._parse_tool_call("weather: 'Moscow'")
+        assert result is not None
+        assert result["tool"] == "weather"
+        assert result["args"]["city"] == "Moscow"

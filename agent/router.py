@@ -118,6 +118,30 @@ class AgentRouter:
             except (json.JSONDecodeError, ValueError):
                 pass
 
+        # Fallback: LLM иногда пишет tool_name: "query" или tool_name("query")
+        tool_names = [t.name for t in self.registry.list_tools()]
+        for name in tool_names:
+            # Формат: web_search: "запрос" или web_search: "запрос"
+            m = re.match(
+                rf'^{re.escape(name)}\s*[:：]\s*["\'](.+?)["\']',
+                text, re.DOTALL,
+            )
+            if m:
+                # Определяем имя первого параметра
+                tool = self.registry.get(name)
+                param_name = tool.params[0].name if tool and tool.params else "query"
+                return {"tool": name, "args": {param_name: m.group(1)}}
+
+            # Формат: web_search("запрос")
+            m = re.match(
+                rf'^{re.escape(name)}\s*\(\s*["\'](.+?)["\']\s*\)',
+                text, re.DOTALL,
+            )
+            if m:
+                tool = self.registry.get(name)
+                param_name = tool.params[0].name if tool and tool.params else "query"
+                return {"tool": name, "args": {param_name: m.group(1)}}
+
         return None
 
     async def route(
@@ -156,6 +180,21 @@ class AgentRouter:
             tool_call = self._parse_tool_call(response)
 
             if tool_call is None:
+                # Проверяем — не вернула ли LLM сломанный tool call
+                tool_names = [t.name for t in self.registry.list_tools()]
+                looks_like_tool = any(
+                    response.startswith(n) and len(response) < 200
+                    for n in tool_names
+                )
+                if looks_like_tool and round_num == 0:
+                    # LLM пыталась вызвать инструмент, но формат кривой
+                    # Просим ответить текстом
+                    logger.warning("Агент: похоже на сломанный tool call, повтор")
+                    prompt = (
+                        f"Ответь текстом на вопрос пользователя. "
+                        f"НЕ используй инструменты.\n\nВопрос: {question}"
+                    )
+                    continue
                 logger.info("Агент: прямой ответ (без инструмента)")
                 return response
 
